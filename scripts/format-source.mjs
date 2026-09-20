@@ -1,0 +1,3 @@
+import{readFile,writeFile,readdir}from'node:fs/promises';import ts from'typescript';
+const files=['public/studio/app.js','public/studio/icons.js'];for(let dir of['core','renderer','controls','collaboration'])for(let f of await readdir('public/studio/packages/'+dir))if(f.endsWith('.js'))files.push('public/studio/packages/'+dir+'/'+f);
+for(let file of files){let source=ts.createSourceFile(file,await readFile(file,'utf8'),ts.ScriptTarget.Latest,true,ts.ScriptKind.JS);if(source.parseDiagnostics.length)throw Error('Syntax errors in '+file);await writeFile(file,ts.createPrinter({newLine:ts.NewLineKind.LineFeed}).printFile(source))}
