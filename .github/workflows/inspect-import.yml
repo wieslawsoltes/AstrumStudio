@@ -1,0 +1,44 @@
+name: Verify retained import
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/inspect-import.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify and recover retained transfer objects
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: python
+        run: |
+          import os, json, urllib.request, base64, pathlib, hashlib, lzma
+          shas = '''f99a9cce47f3baf357810867577fdb90c7264bab e2c27576f25873eec603186bb86e6f298c93e194 27509287008db122172bfb51e9fb9d92f52e8d44 c23ba92417ecde0fa26149318a2cbc8a55f1374a 08186bf9a047e2826a6aed6e28e6391635ef18f0 01b95d95a265d33faa589e19020f84a52b5ba981 3883162c7b0c33dd1dd57d5f9edd4e3f57de6cf2 a04b8c36ce642b7c93b0bcf7bcbebc4b3b75086b 48d3a4050a88b4f7df1ce14117b91cd131450e3f c907390f63a54445b20cebff0f5fb3ca643ecc3e e68336d2ba85c0ece4beb04ec7a5a1a23939550c 7f11eb8a1ba339aba206bfbf11148ccf1ba1deb3 73824c29f95c0ede924deb20a8b0f1e557a90ee3 8983badc2e1f10ed5d3c90916b17cfd7f0595d7e 8999aa945ed16a50c37ba763b18aa882dc1a543a f6b76ee310f13b5d7a757fded607eebb2f60c4f4 e1b7d7fd3620c57b5c038e86da7a4953cb1aac51 6f26a829ff41423b4c106aa07e40cbc622846696'''.split()
+          out = pathlib.Path('/tmp/import-inspection'); out.mkdir()
+          chunks = []
+          for i, sha in enumerate(shas):
+              req = urllib.request.Request('https://api.github.com/repos/' + os.environ['GITHUB_REPOSITORY'] + '/git/blobs/' + sha, headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'], 'Accept': 'application/vnd.github+json'})
+              with urllib.request.urlopen(req, timeout=30) as r: data = json.load(r)
+              b = base64.b64decode(data['content'])
+              assert hashlib.sha1(b'blob ' + str(len(b)).encode() + b'\0' + b).hexdigest() == sha
+              (out / ('chunk-%02d' % i)).write_bytes(b)
+              print(i, sha, len(b), b[:16].hex())
+              chunks.append(b)
+          raw = bytearray(); stream = lzma.LZMADecompressor()
+          for i, b in enumerate(chunks):
+              try:
+                  raw.extend(stream.decompress(b))
+                  print('decoded', i, len(raw), 'complete=',stream.eof)
+              except Exception as e:
+                  print('stream-stop', i, str(e)); break
+          (out / 'partial-decoded.bin').write_bytes(raw)
+          print('decoded-header', repr(raw[:200]))
+      - uses: actions/upload-artifact@v4
+        with:
+          name: retained-import-objects
+          path: /tmp/import-inspection
+          retention-days: 3
