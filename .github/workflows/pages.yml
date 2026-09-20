@@ -1,0 +1,109 @@
+name: Test and publish Pages
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Test engine, topology, API and local storage
+        run: npm test
+      - name: Build portable static editor
+        run: npm run build:pages
+      - name: Package four independent libraries
+        run: npm run package:libraries
+      - name: Install pinned browser test runtime
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.57.0
+          python -m playwright install --with-deps chromium
+      - name: Exercise editing and real IndexedDB at repository subpath
+        run: python scripts/browser-smoke.py
+      - name: Prepare source and runnable static archives
+        run: |
+          git archive --format=zip --prefix=astrum-studio/ --output=artifacts/astrum-studio-source.zip HEAD
+          python - <<'PY'
+          from pathlib import Path
+          import zipfile
+          with zipfile.ZipFile('artifacts/astrum-studio-source.zip', 'a', zipfile.ZIP_DEFLATED) as z:
+              for p in sorted(Path('artifacts/packages').glob('*.tgz')):
+                  z.write(p, 'astrum-studio/' + str(p))
+          with zipfile.ZipFile('artifacts/astrum-studio-pages.zip', 'w', zipfile.ZIP_DEFLATED) as z:
+              for p in sorted(Path('dist-pages').rglob('*')):
+                  if p.is_file(): z.write(p, p.relative_to('dist-pages'))
+          PY
+      - name: Retain validation evidence and downloadable source
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: astrum-validation-and-source
+          path: |
+            test-results/
+            artifacts/packages/*.tgz
+            artifacts/astrum-studio-source.zip
+            artifacts/astrum-studio-pages.zip
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload Pages artifact
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist-pages
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Publish validated editor
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Install pinned browser test runtime
+        run: |
+          python -m pip install --disable-pip-version-check playwright==1.57.0
+          python -m playwright install --with-deps chromium
+      - name: Verify published live editor
+        env:
+          SITE_URL: ${{ steps.deployment.outputs.page_url }}
+        run: |
+          python - <<'PY'
+          import asyncio, importlib.util, os
+          spec = importlib.util.spec_from_file_location('smoke', 'scripts/browser-smoke.py')
+          smoke = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(smoke)
+          asyncio.run(smoke.check(os.environ['SITE_URL']))
+          PY
+          echo 'Live editor verified: ${{ steps.deployment.outputs.page_url }}' >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain live-site screenshots and report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: astrum-live-site-validation
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14
